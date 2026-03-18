@@ -2,10 +2,10 @@
 import { syncRiskSource } from "./services/riskService.js";
 
 export function renderRiskModule(state) {
-  state.riskSnapshot = syncRiskSource({
+  const payload = state.riskSnapshot || syncRiskSource({
     cases: state.cases,
     disputes: state.disputes
   });
-  renderRiskCenter(state, state.riskSnapshot);
+  state.riskSnapshot = payload;
+  renderRiskCenter(state, payload);
 }
-

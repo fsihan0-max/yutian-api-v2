@@ -14,13 +14,11 @@ import {
   readEvidenceFiles
 } from "../components/survey.js";
 import { formatNow } from "../components/utils.js";
-import { updateCase, updateCaseFromAnalysis } from "./services/casesService.js";
 
 const el = (id) => document.getElementById(id);
 
 export function createSurveyModule(state, deps = {}) {
-  const onCaseMutated = deps.onCaseMutated || (() => {});
-  const onReportAction = deps.onReportAction || (() => {});
+  const onBackendSync = deps.onBackendSync || (() => {});
   const goToMenu = deps.goToMenu || (() => {});
 
   function initSurveyTabs() {
@@ -44,7 +42,7 @@ export function createSurveyModule(state, deps = {}) {
       });
       el("btnAnalyze").disabled = !state.mapApi.hasAoi();
     } catch (error) {
-      alert(error.message || "\u5730\u56fe\u521d\u59cb\u5316\u5931\u8d25\u3002");
+      alert(error.message || "地图初始化失败。");
     }
   }
 
@@ -61,7 +59,7 @@ export function createSurveyModule(state, deps = {}) {
 
     const result = await geocodeCN(query);
     if (!result.ok || !result.data.length) {
-      alert("\u672a\u627e\u5230\u4f4d\u7f6e\u3002");
+      alert("未找到位置。");
       return;
     }
     const location = result.data[0];
@@ -79,33 +77,26 @@ export function createSurveyModule(state, deps = {}) {
     } catch {
       state.droneFile = null;
       el("droneUploadInput").value = "";
-      alert("GeoTIFF \u89e3\u6790\u5931\u8d25\u3002");
+      alert("GeoTIFF 解析失败。");
     }
   }
 
   async function handleAnalyze() {
     if (!state.selectedCase) {
-      alert("\u8bf7\u5148\u5728\u6848\u4ef6\u4e2d\u5fc3\u9009\u62e9\u6848\u4ef6\u3002");
+      alert("请先在案件中心选择案件。");
       goToMenu("cases");
       return;
     }
     if (!state.mapApi || !state.mapApi.hasAoi()) {
-      alert("\u8bf7\u5148\u7ed8\u5236 AOI\u3002");
+      alert("请先绘制 AOI。");
       return;
     }
-
-    updateCase(state.selectedCase.id, {
-      status: window.AppConfig.caseStatus.analyzing
-    }, {
-      action: "\u5f00\u59cb\u5206\u6790",
-      detail: `${state.user.displayName || state.user.username}\u5f00\u59cb\u6267\u884c\u8015\u5730\u7b5b\u9009\u4e0e\u5206\u5757\u5206\u7c7b\u3002`
-    });
-    onCaseMutated(state.selectedCase.id);
 
     const geometry = state.mapApi.getGeometryWgsJson();
     const areaMu = state.mapApi.getAreaMu();
     const cropMode = el("cropModeSelect").value;
     const modelMode = el("modelModeSelect").value;
+    const operator = state.user.displayName || state.user.username;
 
     let result;
     if (state.droneFile) {
@@ -115,49 +106,41 @@ export function createSurveyModule(state, deps = {}) {
       form.append("area_mu", areaMu);
       form.append("crop_mode", cropMode);
       form.append("model_mode", modelMode);
+      form.append("case_id", state.selectedCase.id);
+      form.append("operator", operator);
       result = await postAnalyzeForm(form);
     } else {
       result = await postAnalyzeJson({
         geometry: JSON.stringify(geometry),
         area_mu: areaMu,
         crop_mode: cropMode,
-        model_mode: modelMode
+        model_mode: modelMode,
+        case_id: state.selectedCase.id,
+        operator
       });
     }
 
-    if (!result.ok || result.data.status !== "success") {
-      updateCase(state.selectedCase.id, {
-        status: window.AppConfig.caseStatus.pendingSurvey
-      }, {
-        action: "\u5206\u6790\u5931\u8d25",
-        detail: `${state.user.displayName || state.user.username}\u5206\u6790\u5931\u8d25\uff0c\u7b49\u5f85\u91cd\u8bd5\u3002`
-      });
-      onCaseMutated(state.selectedCase.id);
-      alert(result.error || result.data?.error || "\u5206\u6790\u5931\u8d25\u3002");
+    const payload = result.data?.data || {};
+    const nextCaseId = payload.case?.id || state.selectedCase.id;
+    if (result.data?.snapshot) {
+      onBackendSync(result.data.snapshot, nextCaseId);
+    }
+
+    if (!result.ok || !result.data || result.data.status !== "success") {
+      alert(result.error || result.data?.message || "分析失败。");
       return;
     }
 
-    state.currentAnalysis = result.data;
-    setAnalyzeResult(result.data, state.selectedCase);
+    const analysis = payload.analysis || {};
+    state.currentAnalysis = analysis;
+    setAnalyzeResult(analysis, state.selectedCase);
     renderSurveyAuxPanels(state);
     renderOverlay(state.currentAnalysis, state.currentTheme);
-
-    const updatedCase = updateCaseFromAnalysis(
-      state.selectedCase.id,
-      result.data,
-      state.user.displayName || state.user.username
-    );
-    onCaseMutated(updatedCase ? updatedCase.id : state.selectedCase.id);
-    onReportAction({
-      type: "analysis",
-      title: "\u5206\u6790\u5b8c\u6210",
-      detail: `${formatNow()} ${state.selectedCase.id} \u5df2\u5b8c\u6210\u201c\u8015\u5730\u7b5b\u9009 + \u5206\u5757\u5206\u7c7b\u201d\u3002`
-    });
   }
 
   async function handleSaveSample(labelKey) {
     if (!state.currentAnalysis) {
-      alert("\u8bf7\u5148\u6267\u884c\u5206\u6790\u3002");
+      alert("请先执行分析。");
       return;
     }
 
@@ -171,7 +154,7 @@ export function createSurveyModule(state, deps = {}) {
 
     const result = await postSample(payload);
     if (!result.ok) {
-      alert(result.error || "\u6837\u672c\u4fdd\u5b58\u5931\u8d25");
+      alert(result.error || "样本保存失败");
       return;
     }
     loadSamples();
@@ -181,7 +164,7 @@ export function createSurveyModule(state, deps = {}) {
     const files = Array.from(el("fieldPhotoInput").files || []);
     const note = el("fieldNoteInput").value.trim();
     if (!files.length && !note) {
-      alert("\u8bf7\u5148\u4e0a\u4f20\u7167\u7247\u6216\u586b\u5199\u8bf4\u660e\u3002");
+      alert("请先上传照片或填写说明。");
       return;
     }
 
@@ -189,13 +172,13 @@ export function createSurveyModule(state, deps = {}) {
       const photoItems = await readEvidenceFiles(files, note);
       const items = photoItems.length
         ? photoItems
-        : [{ title: `\u5916\u4e1a\u8bf4\u660e ${formatNow()}`, detail: note || "\u5916\u4e1a\u8bc1\u636e", thumbnail: "" }];
+        : [{ title: `外业说明 ${formatNow()}`, detail: note || "外业证据", thumbnail: "" }];
       state.evidence = items.concat(state.evidence);
       el("fieldPhotoInput").value = "";
       el("fieldNoteInput").value = "";
       renderSurveyAuxPanels(state);
     } catch (error) {
-      alert(error.message || "\u7167\u7247\u8bfb\u53d6\u5931\u8d25\u3002");
+      alert(error.message || "照片读取失败。");
     }
   }
 
@@ -231,4 +214,3 @@ export function createSurveyModule(state, deps = {}) {
     refreshPanels
   };
 }
-

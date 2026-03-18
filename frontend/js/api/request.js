@@ -37,6 +37,11 @@ export function postReview(payload) {
   });
 }
 
+export function getReviewDomain(caseId = "") {
+  const query = caseId ? `?case_id=${encodeURIComponent(caseId)}` : "";
+  return requestJson(`${API_BASE()}/api/reviews${query}`);
+}
+
 export function postAnalyzeJson(payload) {
   return requestJson(`${API_BASE()}/api/analyze`, {
     method: "POST",
